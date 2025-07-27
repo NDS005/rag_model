@@ -1,5 +1,4 @@
 import os
-import io
 import hashlib
 import shutil
 import logging
