@@ -16,3 +16,5 @@ langchain-experimental
 python-docx
 requests
 langchain-google-genai
+pymupdf
+unstructured

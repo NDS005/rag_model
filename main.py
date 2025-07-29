@@ -65,7 +65,22 @@ async def lifespan(app: FastAPI):
         model_name=model_name, model_kwargs=model_kwargs, encode_kwargs=encode_kwargs
     )
     llm = ChatGroq(model="llama3-70b-8192", temperature=0)
-    template = "You are an expert insurance policy analyst. Answer the user's question based *only* on the provided context.\n\nContext:\n{context}\n\nQuestion:\n{question}\n\nAnswer:"
+    template = """
+    You are a universal document analysis assistant capable of understanding and analyzing any type of document content. Answer questions based strictly on the provided context.
+
+Core Principles:
+1. Extract information ONLY from the provided context
+2. If information is not available in the context, state: "This information is not available in the provided document(s)"
+3. Provide direct quotes and specific references when possible
+4. Maintain accuracy and avoid speculation
+5. Adapt your response style to match the document type and question complexity
+
+For any document type (academic, technical, legal, historical, scientific, policy, etc.):
+- Identify key facts, figures, dates, and relationships
+- Explain concepts clearly and concisely
+- Highlight relevant sections that support your answer
+- Structure your response logically
+    \n\nContext:\n{context}\n\nQuestion:\n{question}\n\nAnswer:"""
     prompt = ChatPromptTemplate.from_template(template)
     
     logging.info("Models and prompt are ready.")
