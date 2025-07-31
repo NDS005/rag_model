@@ -92,62 +92,71 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="HackRx Generalized RAG API", lifespan=lifespan)
 
+# [... unchanged imports and definitions above ...]
+
 def get_retriever_for_url(document_url: str):
     """
     Creates a retriever for a given document URL using an advanced, structure-aware process.
     """
     try:
-        # 1. THE UPGRADE: Use UnstructuredURLLoader for robust, layout-aware parsing.
-        # This is better than PyPDFLoader as it can understand tables, titles, and lists.
+        logging.info(f"[Loader] Attempting to load document from URL: {document_url}")
+        
+        # Load document using UnstructuredURLLoader
         loader = UnstructuredURLLoader(urls=[document_url], strategy="fast", ssl_verify=False)
         documents = loader.load()
-        
-        # 2. THE FIX: Implement a smarter, rule-based chunking strategy.
-        # These separators are designed to respect the logical structure of policy/legal documents,
-        # preventing "orphan clauses" by keeping rules and their headers together.
+
+        if not documents:
+            logging.error("[Loader] No documents were returned. Check the URL or loader configuration.")
+            raise ValueError("No documents returned by the loader.")
+
+        logging.info(f"[Loader] Loaded {len(documents)} document(s) successfully.")
+
+        # Log first 300 characters of the first document (for sanity check)
+        logging.debug(f"[Loader] Preview of first document content:\n{documents[0].page_content[:300]}")
+
+        # Use smart text splitter
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
             length_function=len,
             separators=[
-                "\n\n\n",                # Major section breaks
-                "\n\n",                  # Paragraphs
-                "\n",                    # Line breaks
-                ". ",                    # Sentences
-                " ",                     # Words
-                r"\n\d{1,2}\.\d{1,2}\.\s", # e.g., "\n5.15. "
-                r"\n\d{1,2}\.\s",         # e.g., "\n4. "
-                r"\n[a-z]\)",             # e.g., "\na)"
+                "\n\n\n", "\n\n", "\n", ". ", " ",
+                r"\n\d{1,2}\.\d{1,2}\.\s",
+                r"\n\d{1,2}\.\s",
+                r"\n[a-z]\)",
             ]
         )
-        
+
+        logging.info("[Splitter] Splitting document into chunks...")
         splits = text_splitter.split_documents(documents)
-        
+
         if not splits:
+            logging.error("[Splitter] No chunks produced. Document may be unreadable or empty.")
             raise ValueError("Document could not be split into chunks. It might be empty or unreadable.")
 
-        # Generate a unique, safe collection name for ChromaDB
+        logging.info(f"[Splitter] Successfully created {len(splits)} chunks from the document.")
+
+        # Generate unique collection name
         url_hash = hashlib.md5(document_url.encode()).hexdigest()
         collection_name = f"docs_{url_hash}"
 
+        logging.info(f"[Vectorstore] Creating Chroma vectorstore collection: {collection_name}")
         vectorstore = Chroma.from_documents(
             documents=splits,
             embedding=embedding_function,
             collection_name=collection_name
         )
-        
-        # Retrieve a slightly larger context window (k=7) to ensure all relevant clauses
-        # are sent to the LLM, allowing it to form a complete and accurate answer.
+
         retriever = vectorstore.as_retriever(
             search_type="mmr",
             search_kwargs={"k": 7, "fetch_k": 15}
         )
-        
-        logging.info(f"Successfully created retriever for document with {len(splits)} chunks")
+
+        logging.info("[Retriever] Retriever created successfully.")
         return retriever
-        
+
     except Exception as e:
-        logging.error(f"Error creating retriever for URL {document_url}: {str(e)}")
+        logging.exception(f"[Retriever] Error while processing document from {document_url}")
         raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
 
 def answer_question(question: str, retriever):
@@ -200,7 +209,7 @@ async def process_documents_and_questions(
         logging.error(f"A critical error occurred in /hackrx/run: {str(e)}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
-if __name__ == "_main_":
+if __name__ == "__main__":
     import uvicorn
     # The uvicorn server expects the filename to be 'main' and the app instance to be 'app'
     # e.g., uvicorn.run("main:app", ...)
