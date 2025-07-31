@@ -1,22 +1,21 @@
-# Use official Python image
 FROM python:3.10-slim
+
+# Install system dependencies for Unstructured + libGL
+RUN apt-get update && apt-get install -y libgl1-mesa-glx
 
 # Set working directory
 WORKDIR /app
 
-# Install dependencies
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 🔽 Install unstructured with PDF dependencies
-RUN pip install "unstructured[pdf]"
-
-# Copy all source code
+# Copy source code
 COPY . .
 
-# Expose port (Cloud Run default is 8080)
+# Set environment variable and expose port
 ENV PORT=8080
 EXPOSE 8080
 
-# Start the FastAPI server
+# Start FastAPI with Uvicorn
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
