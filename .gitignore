@@ -10,3 +10,4 @@ __pycache__/
 # Secret environment variables - CRITICAL FOR SECURITY
 .env
 
+".env" 
