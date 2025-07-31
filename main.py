@@ -1,18 +1,22 @@
+
 import os
 import hashlib
 import shutil
 import logging
 import asyncio
 import re
+import requests  # <-- ADDED for downloading files
+import tempfile  # <-- ADDED for temporary file handling
 from contextlib import asynccontextmanager
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 # --- LangChain Imports ---
-# 1. UPGRADE: Using a more powerful, layout-aware document loader
-from langchain_community.document_loaders import UnstructuredURLLoader
+# 1. UPGRADE: Switched to UnstructuredFileLoader for local file processing
+from langchain_community.document_loaders import UnstructuredFileLoader # <-- CHANGED
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
@@ -92,7 +96,37 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="HackRx Generalized RAG API", lifespan=lifespan)
 
-# [... unchanged imports and definitions above ...]
+
+# --- ✅ NEW HELPER FUNCTION TO HANDLE PDF DOWNLOADS ---
+def download_and_load_pdf(document_url: str):
+    """
+    Downloads a PDF from a URL, saves it to a temporary file,
+    and loads it using UnstructuredFileLoader.
+    """
+    logging.info(f"[Downloader] Downloading file from: {document_url}")
+    try:
+        # Use requests to get the file content
+        response = requests.get(document_url, stream=True)
+        if response.status_code != 200:
+            raise ValueError(f"Failed to download document, status code: {response.status_code}")
+        
+        # Save the content to a temporary file with a .pdf extension
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            tmp_file.write(response.content)
+            tmp_path = tmp_file.name
+        
+        logging.info(f"[Loader] Using UnstructuredFileLoader on temporary file: {tmp_path}")
+        loader = UnstructuredFileLoader(tmp_path)
+        documents = loader.load()
+
+        # Clean up the temporary file after loading
+        os.remove(tmp_path)  
+
+        return documents
+    except Exception as e:
+        logging.exception("[Downloader] Error during file download or loading")
+        raise ValueError(f"Error downloading or loading document: {e}")
+
 
 def get_retriever_for_url(document_url: str):
     """
@@ -101,9 +135,9 @@ def get_retriever_for_url(document_url: str):
     try:
         logging.info(f"[Loader] Attempting to load document from URL: {document_url}")
         
-        # Load document using UnstructuredURLLoader
-        loader = UnstructuredURLLoader(urls=[document_url], strategy="fast", ssl_verify=False)
-        documents = loader.load()
+        # --- ✅ REPLACED URL LOADER WITH PDF DOWNLOADER ---
+        # The new function handles downloading and loading the file
+        documents = download_and_load_pdf(document_url)
 
         if not documents:
             logging.error("[Loader] No documents were returned. Check the URL or loader configuration.")
@@ -211,8 +245,5 @@ async def process_documents_and_questions(
 
 if __name__ == "__main__":
     import uvicorn
-    # The uvicorn server expects the filename to be 'main' and the app instance to be 'app'
-    # e.g., uvicorn.run("main:app", ...)
-    # Since you saved the file as gang.py, you would run it from the terminal as:
-    # uvicorn main:app --reload
     uvicorn.run(app, host="0.0.0.0", port=8001)
+
