@@ -1,14 +1,5 @@
+# Use the standard slim image, no extra system dependencies needed
 FROM python:3.10-slim
-
-# Install system dependencies required by Unstructured for PDF processing
-# libglib2.0-0 provides the missing libgthread-2.0.so.0
-# poppler-utils is essential for PDF parsing by Unstructured
-# tesseract-ocr handles images within PDFs
-RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    poppler-utils \
-    tesseract-ocr
 
 # Set working directory
 WORKDIR /app

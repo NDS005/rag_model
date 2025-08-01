@@ -10,8 +10,10 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
+
 # --- LangChain Imports ---
-from langchain_community.document_loaders import UnstructuredFileLoader
+# Reverted to more reliable, pure-python loaders
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
@@ -45,59 +47,77 @@ class HackRxResponse(BaseModel):
 embedding_function = None
 llm = None
 prompt = None
+CACHE_DIR = "./document_cache"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global embedding_function, llm, prompt
     logging.info("Application startup: Initializing models...")
+    if os.path.exists(CACHE_DIR):
+        shutil.rmtree(CACHE_DIR)
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
     model_name = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_function = HuggingFaceEmbeddings(model_name=model_name, model_kwargs={"device": "cpu"})
     llm = ChatGroq(model="llama3-70b-8192", temperature=0)
-    template = """You are a universal document analysis assistant... (your prompt here)"""
+    template = """You are an expert insurance policy analyst. Answer the user's question based only on the provided context. If the answer is not found in the context, state that clearly.
+
+Context:
+{context}
+
+Question: {question}
+
+Answer:"""
     prompt = ChatPromptTemplate.from_template(template)
     logging.info("Models and prompt are ready.")
     yield
     logging.info("Application shutdown.")
 
-app = FastAPI(title="HackRx Generalized RAG API", lifespan=lifespan)
+app = FastAPI(title="HackRx RAG API", lifespan=lifespan)
 
-def download_and_load_document(document_url: str):
+def get_retriever_for_url(document_url: str):
+    url_hash = hashlib.md5(document_url.encode()).hexdigest()
+    cache_path = os.path.join(CACHE_DIR, url_hash)
+
+    if os.path.exists(cache_path):
+        logging.info(f"Cache hit. Loading vector store from: {cache_path}")
+        vectorstore = Chroma(persist_directory=cache_path, embedding_function=embedding_function)
+        return vectorstore.as_retriever(search_kwargs={"k": 7})
+
+    logging.info(f"Cache miss. Processing document from: {document_url}")
     try:
         response = requests.get(document_url)
         response.raise_for_status()
         
-        # Determine the correct suffix
-        file_suffix = ".pdf" # Default
-        if ".docx" in document_url:
+        # Determine file type and create appropriate temporary file
+        file_suffix = ".pdf"
+        if ".docx" in document_url.lower():
             file_suffix = ".docx"
-        # Add more types as needed
+        # Add other types like .eml here if needed
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as tmp_file:
             tmp_file.write(response.content)
             tmp_path = tmp_file.name
         
-        loader = UnstructuredFileLoader(tmp_path)
+        # Choose the correct, reliable loader based on file type
+        if file_suffix == ".pdf":
+            loader = PyPDFLoader(tmp_path)
+        elif file_suffix == ".docx":
+            loader = Docx2txtLoader(tmp_path)
+        else:
+            # Fallback for unknown types
+            loader = PyPDFLoader(tmp_path)
+
         documents = loader.load()
         os.remove(tmp_path)
-        return documents
-    except Exception as e:
-        logging.exception("Error during file download or loading")
-        raise ValueError(f"Error downloading or loading document: {e}")
-
-def get_retriever_for_url(document_url: str):
-    try:
-        documents = download_and_load_document(document_url)
-        if not documents:
-            raise ValueError("No documents returned by the loader.")
 
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         splits = text_splitter.split_documents(documents)
-        if not splits:
-            raise ValueError("Document could not be split into chunks.")
 
-        url_hash = hashlib.md5(document_url.encode()).hexdigest()
-        vectorstore = Chroma.from_documents(documents=splits, embedding=embedding_function, collection_name=f"docs_{url_hash}")
-        return vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 7, "fetch_k": 15})
+        vectorstore = Chroma.from_documents(documents=splits, embedding=embedding_function, persist_directory=cache_path)
+        logging.info(f"Saved new vector store to cache: {cache_path}")
+        return vectorstore.as_retriever(search_kwargs={"k": 7})
+
     except Exception as e:
         logging.exception(f"Error while processing document from {document_url}")
         raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
@@ -113,7 +133,6 @@ async def answer_question(question: str, retriever):
             | llm
             | StrOutputParser()
         )
-        # Use ainoke for true async behavior with LangChain
         answer = await rag_chain.ainvoke(question)
         return answer.strip()
     except Exception as e:
@@ -127,11 +146,8 @@ async def process_documents_and_questions(
 ):
     try:
         retriever = get_retriever_for_url(request_data.documents)
-        
-        # This is a more robust way to run async tasks
-        answer_tasks = [answer_question(q, retriever) for q in request_data.questions]
-        answers = await asyncio.gather(*answer_tasks)
-        
+        tasks = [answer_question(q, retriever) for q in request_data.questions]
+        answers = await asyncio.gather(*tasks)
         return HackRxResponse(answers=answers)
     except HTTPException as http_exc:
         raise http_exc
