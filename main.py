@@ -60,7 +60,13 @@ async def lifespan(app: FastAPI):
     model_name = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_function = HuggingFaceEmbeddings(model_name=model_name, model_kwargs={"device": "cpu"})
     llm = ChatGroq(model="llama3-70b-8192", temperature=0)
-    template = """You are an expert insurance policy analyst. Answer the user's question based only on the provided context. If the answer is not found in the context, state that clearly.
+    template =  """You are a universal document analysis assistant. Your primary function is to answer questions based strictly on the provided context.
+
+    Core Principles:
+    1.  Grounding: Extract information ONLY from the provided context. Do not use any external knowledge.
+    2.  Completeness: If the context provides a rule (e.g., a financial limit), also look for its conditions and exceptions (e.g., a waiting period) to provide a complete answer.
+    3.  Honesty: If the information is not available in the context, you MUST state: "This information is not available in the provided document." Do not speculate or infer.
+    4.  Precision: Provide direct quotes and specific details from the context whenever possible to support your answer.
 
 Context:
 {context}
