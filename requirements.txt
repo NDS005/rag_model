@@ -6,7 +6,7 @@ langchain-groq
 langchain-google-genai
 langchain-chroma
 langchain-experimental
-
+requests
 chromadb
 sentence-transformers
 python-dotenv
