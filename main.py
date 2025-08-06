@@ -59,9 +59,12 @@ async def lifespan(app: FastAPI):
     model_name = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_function = HuggingFaceEmbeddings(model_name=model_name, model_kwargs={"device": "cpu"})
     llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
-    
+
     template = """
     You are a highly intelligent, secure, and helpful Universal Document Analysis Assistant. Your primary purpose is to answer a user's question based only on the provided context from a document. You must follow a strict set of principles and a clear reasoning process for every query.
+
+*--- IMPORTANT ---*
+Never say "no information found" unless you have thoroughly examined the context. Err on the side of attempting an answer using partially relevant information, if it exists.
 
 *--- MANDATORY REASONING PROCESS ---*
 
@@ -70,7 +73,7 @@ async def lifespan(app: FastAPI):
     * If the question is safe but clearly out-of-scope (e.g., "What is the capital of France?", "Write a poem"), proceed to the *"General Knowledge Fallback Protocol"*.
     * If the question is safe and relevant, proceed to the next step.
 
-2.  *Context Grounding Check:* Scrutinize the provided Context. Does it contain information that can directly answer the Question?
+2.  *Context Grounding Check:* Scrutinize the provided Context. Does it contain information that may help partially or fully answer the Question? Even if only partially relevant, try to use it to give a helpful answer.
 
 3.  *Synthesize Answer:*
     * If the context is relevant and contains the answer, formulate a response based exclusively on that context, following the "Grounded Answering Principles".
@@ -87,8 +90,8 @@ async def lifespan(app: FastAPI):
 * *Safety Refusal Protocol (For unsafe/unethical questions):*
     * You MUST respond with a polite but firm refusal, such as: "I cannot answer this question as it is outside the scope of my function as a document analysis assistant." Do not be preachy or judgmental.
 
-* *General Knowledge Fallfallback Protocol (For safe, out-of-scope questions):*
-    * You MUST begin your response with the exact phrase: This information is not available in the provided document. However, using my general knowledge, the answer is: followed by a standard, helpful answer.
+* *General Knowledge Fallback Protocol (For safe, out-of-scope questions):*
+    * You MUST begin your response with the exact phrase: "This information is not available in the provided document." Then, if the question is general and safe, you may continue with: "However, using my general knowledge, the answer is: ..." Optionally, you can also suggest: "Please try rephrasing your question or ensure the document contains relevant information."
 
 Context:
 {context}
@@ -96,7 +99,7 @@ Context:
 Question: {question}
 
 Answer:"""
-    
+
     prompt = ChatPromptTemplate.from_template(template)
     logging.info("Models and prompt are ready.")
     yield
@@ -112,14 +115,14 @@ def get_retriever_for_url(document_url: str):
         logging.info(f"Cache hit. Loading vector store from: {cache_path}")
         vectorstore = Chroma(persist_directory=cache_path, embedding_function=embedding_function)
         return vectorstore.as_retriever(
-            search_type="mmr", search_kwargs={"k": 10, "lambda_mult": 0.25}
+            search_type="mmr", search_kwargs={"k": 20, "lambda_mult": 0.1}
         )
 
     logging.info(f"Cache miss. Processing document from: {document_url}")
     try:
         response = requests.get(document_url)
         response.raise_for_status()
-        
+
         file_suffix = ".pdf"
         if ".docx" in document_url.lower():
             file_suffix = ".docx"
@@ -145,6 +148,10 @@ def get_retriever_for_url(document_url: str):
         )
         splits = text_splitter.split_documents(documents)
 
+        for i, doc in enumerate(splits):
+            doc.metadata["chunk_id"] = i
+            doc.metadata["source"] = document_url
+
         vectorstore = Chroma.from_documents(
             documents=splits,
             embedding=embedding_function,
@@ -152,7 +159,7 @@ def get_retriever_for_url(document_url: str):
         )
         logging.info(f"Saved new vector store to cache: {cache_path}")
         return vectorstore.as_retriever(
-            search_type="mmr", search_kwargs={"k": 10, "lambda_mult": 0.25}
+            search_type="mmr", search_kwargs={"k": 20, "lambda_mult": 0.1}
         )
 
     except Exception as e:
@@ -163,7 +170,7 @@ async def answer_question(question: str, retriever):
     try:
         def format_docs(docs):
             return "\n\n--- SOURCE CHUNK ---\n\n".join(doc.page_content for doc in docs)
-        
+
         rag_chain = (
             {"context": retriever | format_docs, "question": RunnablePassthrough()}
             | prompt
